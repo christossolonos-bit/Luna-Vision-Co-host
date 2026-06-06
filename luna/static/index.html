@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Luna Gaming Co-Host</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+      "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.4.4/lib/three-vrm.module.js",
+      "@pixiv/three-vrm-animation": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm-animation@3.4.4/lib/three-vrm-animation.module.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <canvas id="vrm-canvas"></canvas>
+
+    <div id="hud">
+      <div id="status-pill" class="pill">Connecting…</div>
+      <button id="settings-btn" class="icon-btn" title="Settings">⚙</button>
+    </div>
+
+    <div id="settings-panel" class="panel hidden">
+      <label>
+        Co-host style
+        <select id="style-select">
+          <option value="energetic">Energetic</option>
+          <option value="tactical">Tactical</option>
+          <option value="chill">Chill</option>
+        </select>
+      </label>
+      <label class="check-row">
+        <input type="checkbox" id="use-screen" checked />
+        Include screen in chat
+      </label>
+      <label class="check-row">
+        <input type="checkbox" id="speak-replies" checked />
+        Speak replies (Edge TTS)
+      </label>
+      <label class="check-row">
+        <input type="checkbox" id="watch-enabled" />
+        Auto watch commentary
+      </label>
+      <label>
+        Watch interval (sec)
+        <input type="number" id="watch-interval" min="5" max="60" value="8" />
+      </label>
+      <button id="clear-memory" class="ghost-btn">Clear memory</button>
+      <p class="obs-hint">
+        OBS chroma key overlay (green screen):
+        <a id="obs-url" href="/obs" target="_blank">open /obs</a>
+      </p>
+    </div>
+
+    <div id="dock">
+      <div id="dock-top">
+        <div class="dock-group capture-group">
+          <span class="dock-label">Screen share</span>
+          <div class="custom-select" id="capture-select">
+            <button
+              type="button"
+              class="custom-select-trigger"
+              id="capture-trigger"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+            >
+              Loading…
+            </button>
+            <ul class="custom-select-menu hidden" id="capture-menu" role="listbox"></ul>
+          </div>
+          <input type="hidden" id="capture-source" value="monitor:1" />
+          <button id="analyze-btn" class="ghost-btn">Analyze</button>
+        </div>
+        <div class="dock-group voice-group">
+          <button id="mic-btn" class="mic-btn" type="button" title="Turn voice listening on">
+            🎤 Listen: OFF
+          </button>
+          <span id="mic-status" class="mic-status"></span>
+        </div>
+      </div>
+
+      <div id="chat-log"></div>
+
+      <form id="chat-form" class="chat-form">
+        <input
+          id="chat-input"
+          type="text"
+          placeholder="Chat with Luna or ask about your game…"
+          autocomplete="off"
+        />
+        <button type="submit" class="send-btn">Send</button>
+      </form>
+    </div>
+  </div>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,405 @@
+:root {
+  --bg: #07080f;
+  --panel: rgba(12, 14, 24, 0.88);
+  --panel-solid: #0c0e18;
+  --panel-hover: #14182b;
+  --border: rgba(120, 140, 200, 0.22);
+  --text: #eef2ff;
+  --muted: #9aa4c7;
+  --accent: #5ee7ff;
+  --accent-2: #a78bfa;
+  --danger: #ff6b8a;
+  --dock-height: 240px;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 20%, #14182b 0%, var(--bg) 55%);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+#app {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+#vrm-canvas {
+  display: block;
+  width: 100%;
+  height: calc(100% - var(--dock-height));
+  cursor: grab;
+}
+
+#vrm-canvas.vrm-dragging {
+  cursor: ns-resize;
+}
+
+#hud {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  right: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  pointer-events: none;
+}
+
+.pill {
+  pointer-events: auto;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(10px);
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.pill.ok {
+  color: #8ef5c0;
+}
+
+.pill.error {
+  color: var(--danger);
+}
+
+.icon-btn {
+  pointer-events: auto;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+}
+
+#settings-panel {
+  position: absolute;
+  top: 64px;
+  right: 16px;
+  width: 260px;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(12px);
+  display: grid;
+  gap: 12px;
+  z-index: 20;
+}
+
+#settings-panel.hidden {
+  display: none;
+}
+
+#settings-panel label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+#settings-panel select,
+#settings-panel input[type="number"] {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background-color: var(--panel-solid);
+  color: var(--text);
+  color-scheme: dark;
+}
+
+#settings-panel select option {
+  background-color: var(--panel-solid);
+  color: var(--text);
+}
+
+.check-row {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: 8px;
+}
+
+#dock {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--dock-height);
+  padding: 14px 18px 16px;
+  background: linear-gradient(180deg, rgba(7, 8, 15, 0.2), rgba(7, 8, 15, 0.96));
+  border-top: 1px solid var(--border);
+  backdrop-filter: blur(16px);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 10px;
+}
+
+#dock-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.dock-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dock-label {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+#capture-source {
+  display: none;
+}
+
+.custom-select {
+  position: relative;
+  min-width: 280px;
+  max-width: 420px;
+}
+
+.custom-select-trigger {
+  width: 100%;
+  padding: 10px 36px 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background-color: var(--panel-solid);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  position: relative;
+  font: inherit;
+}
+
+.custom-select-trigger::after {
+  content: "▾";
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.custom-select-trigger:focus {
+  outline: none;
+  border-color: rgba(94, 231, 255, 0.45);
+}
+
+.custom-select-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background-color: var(--panel-solid);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  max-height: 220px;
+  overflow-y: auto;
+  z-index: 30;
+}
+
+.custom-select-menu.hidden {
+  display: none;
+}
+
+.custom-select-option {
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.custom-select-option:hover,
+.custom-select-option.selected {
+  background-color: var(--panel-hover);
+}
+
+.custom-select-option:hover,
+.custom-select-option.selected {
+  background-color: var(--panel-hover);
+}
+
+.mic-mode-btn {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+}
+
+.ghost-btn,
+.send-btn,
+.mic-btn {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.send-btn {
+  background: linear-gradient(135deg, rgba(94, 231, 255, 0.25), rgba(167, 139, 250, 0.25));
+}
+
+.mic-btn {
+  min-width: 140px;
+  background: linear-gradient(135deg, rgba(167, 139, 250, 0.18), rgba(94, 231, 255, 0.12));
+}
+
+.mic-btn.listening {
+  border-color: rgba(94, 231, 255, 0.45);
+  background: linear-gradient(135deg, rgba(94, 231, 255, 0.18), rgba(167, 139, 250, 0.12));
+}
+
+.mic-btn.recording {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 2px rgba(255, 107, 138, 0.25);
+  background: linear-gradient(135deg, rgba(255, 107, 138, 0.22), rgba(167, 139, 250, 0.12));
+}
+
+.mic-status {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#chat-log {
+  overflow-y: auto;
+  padding-right: 6px;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.msg {
+  max-width: 92%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  font-size: 14px;
+  line-height: 1.45;
+  border: 1px solid transparent;
+}
+
+.msg.user {
+  justify-self: end;
+  background: rgba(94, 231, 255, 0.12);
+  border-color: rgba(94, 231, 255, 0.18);
+}
+
+.msg.assistant {
+  justify-self: start;
+  background: rgba(167, 139, 250, 0.12);
+  border-color: rgba(167, 139, 250, 0.18);
+}
+
+.msg.system {
+  justify-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  background: transparent;
+}
+
+.capture-preview img {
+  display: block;
+  margin-top: 8px;
+  max-width: 280px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.msg .role {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.chat-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+}
+
+#chat-input {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+}
+
+#chat-input:focus {
+  outline: none;
+  border-color: rgba(94, 231, 255, 0.45);
+}
+
+@media (max-width: 760px) {
+  :root {
+    --dock-height: 280px;
+  }
+
+  #capture-select {
+    min-width: 180px;
+  }
+}
+
+.obs-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.obs-hint a {
+  color: var(--accent);
+}
+
+/* OBS Browser Source — chroma key green (#00ff00), VRM only */
+body.obs-overlay {
+  background: #00ff00 !important;
+}
+
+body.obs-overlay #app {
+  background: #00ff00;
+}
+
+body.obs-overlay #hud,
+body.obs-overlay #settings-panel,
+body.obs-overlay #dock {
+  display: none !important;
+}
+
+body.obs-overlay #vrm-canvas {
+  width: 100vw;
+  height: 100vh;
+  cursor: ns-resize;
+}

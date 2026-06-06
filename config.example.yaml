@@ -1,0 +1,38 @@
+ollama:
+  host: http://127.0.0.1:11434
+  model: qwen3.5:4b
+  think: false
+  temperature: 0.85
+  max_tokens: 180
+  num_ctx: 4096
+
+screen:
+  monitor: 1
+  max_width: 960
+  jpeg_quality: 68
+  capture_interval_sec: 8
+
+cohost:
+  name: Luna
+  player_name: your_gamertag
+  style: energetic
+  max_history: 8
+
+vrm:
+  model_path: "C:\\path\\to\\your\\model.vrm"
+  idle_animation_path: "C:\\path\\to\\your\\idle.vrma"
+
+voice:
+  edge_voice: en-US-AvaMultilingualNeural
+  rate: "+0%"
+  pitch: "+0Hz"
+
+speech:
+  model: base
+  device: cpu
+  compute_type: int8
+
+ui:
+  host: 127.0.0.1
+  port: 7860
+  share: false
