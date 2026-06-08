@@ -185,12 +185,17 @@ async function loadCaptureSources() {
   selectCaptureSource(preferred.id, preferred.label);
 }
 
-function selectCaptureSource(id, label) {
+async function selectCaptureSource(id, label) {
   els.captureSource.value = id;
   els.captureTrigger.textContent = label;
   closeCaptureMenu();
   for (const option of els.captureMenu.querySelectorAll(".custom-select-option")) {
     option.classList.toggle("selected", option.dataset.value === id);
+  }
+  try {
+    await api(`/api/preview?source=${encodeURIComponent(id)}`);
+  } catch {
+    // Preview sync is best-effort; chat still passes capture_source.
   }
 }
 
@@ -221,7 +226,22 @@ function setupCaptureSelect() {
   });
 }
 
-async function playAssistantAudio(audioB64) {
+function audioMimeFromBytes(bytes, audioFormat = null) {
+  if (audioFormat === "wav") return "audio/wav";
+  if (audioFormat === "mpeg" || audioFormat === "mp3") return "audio/mpeg";
+  if (
+    bytes.length >= 4 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46
+  ) {
+    return "audio/wav";
+  }
+  return "audio/mpeg";
+}
+
+async function playAssistantAudio(audioB64, audioFormat = null) {
   if (!audioB64) return;
 
   const binary = atob(audioB64);
@@ -229,7 +249,7 @@ async function playAssistantAudio(audioB64) {
   for (let i = 0; i < binary.length; i += 1) {
     bytes[i] = binary.charCodeAt(i);
   }
-  const blob = new Blob([bytes], { type: "audio/mpeg" });
+  const blob = new Blob([bytes], { type: audioMimeFromBytes(bytes, audioFormat) });
   const url = URL.createObjectURL(blob);
 
   if (!vrmState.audioContext) {
@@ -270,13 +290,13 @@ async function refreshObsActive() {
   }
 }
 
-async function routeAssistantAudio(audioB64) {
+async function routeAssistantAudio(audioB64, audioFormat = null) {
   if (!audioB64) return;
 
   state.vadPaused = true;
   try {
     if (isObsOverlay) {
-      await playAssistantAudio(audioB64);
+      await playAssistantAudio(audioB64, audioFormat);
       return;
     }
 
@@ -290,7 +310,7 @@ async function routeAssistantAudio(audioB64) {
       return;
     }
 
-    await playAssistantAudio(audioB64);
+    await playAssistantAudio(audioB64, audioFormat);
   } finally {
     state.vadPaused = false;
   }
@@ -318,7 +338,7 @@ async function sendChat(message, { systemLabel = null } = {}) {
       showCaptureFeedback(data);
     }
     appendMessage("assistant", data.reply);
-    await routeAssistantAudio(data.audio_b64);
+    await routeAssistantAudio(data.audio_b64, data.audio_format);
   } catch (error) {
     appendMessage("system", error.message);
   } finally {
@@ -342,7 +362,7 @@ async function analyzeScreen() {
     });
     showCaptureFeedback(data);
     appendMessage("assistant", data.reply);
-    await routeAssistantAudio(data.audio_b64);
+    await routeAssistantAudio(data.audio_b64, data.audio_format);
   } catch (error) {
     appendMessage("system", error.message);
   } finally {
@@ -362,7 +382,7 @@ async function watchTick() {
     if (data.skipped || !data.reply) return;
     showCaptureFeedback(data);
     appendMessage("assistant", `[Watch ${data.timestamp}] ${data.reply}`);
-    await routeAssistantAudio(data.audio_b64);
+    await routeAssistantAudio(data.audio_b64, data.audio_format);
   } catch (error) {
     appendMessage("system", error.message);
   } finally {

@@ -11,6 +11,10 @@ screen:
   max_width: 960
   jpeg_quality: 68
   capture_interval_sec: 8
+  video_max_segments: 5
+  video_bytes_per_second: 1000000
+  video_fps: 4
+  video_segment_seconds: 1.0
 
 cohost:
   name: Luna

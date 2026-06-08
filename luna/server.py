@@ -6,6 +6,8 @@ import threading
 import time
 from pathlib import Path
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -15,6 +17,7 @@ from luna.brain import CohostBrain
 from luna.config import AppConfig, load_config
 from luna.screen import CaptureResult, ScreenCapture
 from luna.speech import SpeechRecognizer
+from luna.video_buffer import ScreenVideoBuffer
 from luna.voice import EdgeVoice
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -77,6 +80,7 @@ class LunaService:
         self.config = config
         self.brain = CohostBrain(config)
         self.screen = ScreenCapture(config.screen)
+        self.video_buffer = ScreenVideoBuffer(self.screen, config.screen)
         self.voice = EdgeVoice(config.voice)
         self.speech = SpeechRecognizer(config.speech)
         self._watch_lock = threading.Lock()
@@ -91,13 +95,26 @@ class LunaService:
         return self.screen.list_capture_sources()
 
     def capture_preview(self, source: str) -> dict[str, str | bool]:
-        result = self.screen.capture_source(source)
+        self.video_buffer.set_source(source)
+        result = self.video_buffer.get_latest_frame()
+        if result is None:
+            result = self.screen.capture_source(source)
         self._last_frame_b64 = result.image_b64
         return {
             "image_b64": result.preview_b64,
             "label": result.source_label,
             "is_blank": result.is_blank,
         }
+
+    def _vision_capture(self, capture_source: str) -> CaptureResult:
+        self.video_buffer.set_source(capture_source)
+        if not self.video_buffer.running:
+            self.video_buffer.start()
+        result = self.video_buffer.get_latest_frame()
+        if result is None:
+            result = self.screen.capture_source(capture_source)
+        self._last_frame_b64 = result.image_b64
+        return result
 
     def _vision_prefix(self, result: CaptureResult) -> str:
         if result.is_blank:
@@ -131,39 +148,50 @@ class LunaService:
         prompt = message.strip()
 
         if use_screen:
-            result = self.screen.capture_source(capture_source)
+            result = self._vision_capture(capture_source)
             image_b64 = result.image_b64
-            self._last_frame_b64 = image_b64
             meta = self._capture_response_meta(result)
             prompt = self._vision_prefix(result) + prompt
 
         try:
             reply = self.brain.ask(prompt, image_b64)
-            audio_b64 = self._speak_if_needed(reply, speak)
-            return {"reply": reply, "audio_b64": audio_b64, **meta}
+            audio_b64, audio_format = self._speak_if_needed(reply, speak)
+            return {
+                "reply": reply,
+                "audio_b64": audio_b64,
+                "audio_format": audio_format,
+                **meta,
+            }
         except Exception as exc:  # noqa: BLE001
             return {
                 "reply": self.brain.friendly_error(exc),
                 "audio_b64": None,
+                "audio_format": None,
                 "error": True,
                 **meta,
             }
 
     def analyze(self, capture_source: str, style: str, speak: bool) -> dict[str, str | bool | None]:
         self.config.cohost.style = style
-        result = self.screen.capture_source(capture_source)
-        self._last_frame_b64 = result.image_b64
+        result = self._vision_capture(capture_source)
         prompt = self._vision_prefix(result) + (
-            "Look at this screenshot taken just now. Describe only what is clearly visible."
+            "Look at this frame from the live video stream taken just now. "
+            "Describe only what is clearly visible."
         )
         try:
             reply = self.brain.ask(prompt, result.image_b64)
-            audio_b64 = self._speak_if_needed(reply, speak)
-            return {"reply": reply, "audio_b64": audio_b64, **self._capture_response_meta(result)}
+            audio_b64, audio_format = self._speak_if_needed(reply, speak)
+            return {
+                "reply": reply,
+                "audio_b64": audio_b64,
+                "audio_format": audio_format,
+                **self._capture_response_meta(result),
+            }
         except Exception as exc:  # noqa: BLE001
             return {
                 "reply": self.brain.friendly_error(exc),
                 "audio_b64": None,
+                "audio_format": None,
                 "error": True,
                 **self._capture_response_meta(result),
             }
@@ -181,27 +209,33 @@ class LunaService:
 
         try:
             self.config.cohost.style = style
-            result = self.screen.capture_source(capture_source)
-            self._last_frame_b64 = result.image_b64
+            result: CaptureResult | None = None
+            result = self._vision_capture(capture_source)
             prompt = self._vision_prefix(result) + (
-                "You are watching live gameplay. Give a short co-host line about what is "
-                "clearly visible. Do not invent details. Avoid repeating your last comment."
+                "You are watching live gameplay from a rolling video stream. "
+                "Give a short co-host line about what is clearly visible. "
+                "Do not invent details. Avoid repeating your last comment."
             )
             reply = self.brain.ask(prompt, result.image_b64)
-            audio_b64 = self._speak_if_needed(reply, speak)
+            audio_b64, audio_format = self._speak_if_needed(reply, speak)
             return {
                 "reply": reply,
                 "audio_b64": audio_b64,
+                "audio_format": audio_format,
                 "timestamp": time.strftime("%H:%M:%S"),
                 **self._capture_response_meta(result),
             }
         except Exception as exc:  # noqa: BLE001
+            meta: dict[str, str | bool] = (
+                self._capture_response_meta(result) if result is not None else {}
+            )
             return {
                 "reply": self.brain.friendly_error(exc),
                 "audio_b64": None,
+                "audio_format": None,
                 "error": True,
                 "timestamp": time.strftime("%H:%M:%S"),
-                **self._capture_response_meta(result),
+                **meta,
             }
         finally:
             with self._watch_lock:
@@ -216,20 +250,28 @@ class LunaService:
     def reset(self) -> None:
         self.brain.reset()
 
-    def _speak_if_needed(self, text: str, speak: bool) -> str | None:
+    def _speak_if_needed(self, text: str, speak: bool) -> tuple[str | None, str | None]:
         if not speak or not text.strip():
-            return None
+            return None, None
         audio = self.voice.synthesize(text)
         if not audio:
-            return None
-        return base64.b64encode(audio).decode("ascii")
+            return None, None
+        return base64.b64encode(audio).decode("ascii"), self.voice.audio_format
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
     cfg = config or load_config()
     service = LunaService(cfg)
     obs_relay = ObsRelay()
-    app = FastAPI(title="Luna Gaming Co-Host")
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        service.video_buffer.start()
+        yield
+        service.video_buffer.stop()
+        service.voice.shutdown()
+
+    app = FastAPI(title="Luna Gaming Co-Host", lifespan=lifespan)
 
     @app.get("/")
     async def index() -> FileResponse:
@@ -285,7 +327,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.post("/api/tts")
     async def api_tts(body: TTSRequest) -> Response:
-        audio = service.tts(body.text)
+        audio = service.voice.synthesize(body.text)
         return Response(content=audio, media_type="audio/mpeg")
 
     @app.post("/api/stt")
@@ -343,16 +385,18 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return {"audio_b64": obs_relay.poll_tts()}
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    app.state.luna_service = service
     return app
 
 
 def launch(config_path: str | None = None) -> None:
     import webbrowser
 
-    config = load_config(config_path)
-    url = f"http://{config.ui.host}:{config.ui.port}/"
-    webbrowser.open(url)
     import uvicorn
 
+    config = load_config(config_path)
     app = create_app(config)
+    service: LunaService = app.state.luna_service
+    url = f"http://{config.ui.host}:{config.ui.port}/"
+    webbrowser.open(url)
     uvicorn.run(app, host=config.ui.host, port=config.ui.port, log_level="info")

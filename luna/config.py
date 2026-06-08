@@ -25,6 +25,10 @@ class ScreenConfig:
     max_width: int = 960
     jpeg_quality: int = 68
     capture_interval_sec: float = 8.0
+    video_max_segments: int = 5
+    video_bytes_per_second: int = 1_000_000
+    video_fps: int = 4
+    video_segment_seconds: float = 1.0
 
 
 @dataclass

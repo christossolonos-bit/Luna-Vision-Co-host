@@ -45,6 +45,8 @@ def clean_for_speech(text: str) -> str:
 
 
 class EdgeVoice:
+    audio_format = "mpeg"
+
     def __init__(self, config: VoiceConfig) -> None:
         self.config = config
         self._lock = threading.Lock()
@@ -83,3 +85,9 @@ class EdgeVoice:
         buffer = io.BytesIO(payload)
         buffer.seek(0)
         return buffer
+
+    def start(self) -> None:
+        return
+
+    def shutdown(self) -> None:
+        self._executor.shutdown(wait=False, cancel_futures=True)

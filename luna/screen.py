@@ -196,6 +196,9 @@ class ScreenCapture:
     def is_mostly_blank(self, image: Image.Image) -> bool:
         return self._content_score(image) < 0.08
 
+    def from_image(self, image: Image.Image, label: str) -> CaptureResult:
+        return self._finalize(image, label)
+
     def _finalize(self, image: Image.Image, label: str) -> CaptureResult:
         preview = image.copy()
         is_blank = self.is_mostly_blank(preview)
