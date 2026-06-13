@@ -689,6 +689,51 @@ function updateLipSync() {
   vrmState.vrm.expressionManager.update();
 }
 
+const OBS_RENDER_FPS = 60;
+
+// Browsers pause requestAnimationFrame when a window is minimized. A timer loop plus
+// inaudible audio keeps the OBS overlay animating for window capture / background use.
+function startObsBackgroundKeepAlive() {
+  if (!isObsOverlay) return;
+
+  let ctx = null;
+  try {
+    ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.frequency.value = 20000;
+    gain.gain.value = 0.001;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(0);
+  } catch {
+    return;
+  }
+
+  const resume = () => {
+    void ctx?.resume();
+  };
+  resume();
+  document.addEventListener("visibilitychange", resume);
+  window.addEventListener("focus", resume);
+}
+
+function startVrmRenderLoop(renderer, tick) {
+  if (!isObsOverlay) {
+    renderer.setAnimationLoop(tick);
+    return;
+  }
+
+  startObsBackgroundKeepAlive();
+
+  const intervalMs = 1000 / OBS_RENDER_FPS;
+  setInterval(tick, intervalMs);
+
+  document.addEventListener("visibilitychange", () => {
+    vrmState.clock.getDelta();
+  });
+}
+
 function setupVrmVerticalDrag(canvas, vrm, controls) {
   canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 
@@ -814,7 +859,7 @@ async function initVrmViewer() {
   window.addEventListener("resize", resize);
   resize();
 
-  renderer.setAnimationLoop(() => {
+  startVrmRenderLoop(renderer, () => {
     const delta = vrmState.clock.getDelta();
     vrmState.mixer?.update(delta);
     vrm.update(delta);
@@ -886,7 +931,7 @@ async function boot() {
       const player = appConfig.player_name || "player";
       appendMessage(
         "assistant",
-        `Hey ${player}! I'm Luna, your co-host. Pick a screen or game window and let's play.`,
+        `Hey ${player}! I'm Luna, your co-host. Share your screen — games, Suno, whatever you're up to — and let's go.`,
       );
     }
   } catch (error) {

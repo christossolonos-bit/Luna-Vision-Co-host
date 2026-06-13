@@ -12,17 +12,22 @@ from luna.screen import shrink_image_b64
 
 STYLE_PROMPTS = {
     "energetic": (
-        "You are upbeat, hype, and supportive — like a stream co-host who celebrates "
-        "good plays and keeps morale up."
+        "You are upbeat and supportive — like a stream co-host who hypes good moments "
+        "and keeps morale up, whether they are gaming, creating music, or working on something fun."
     ),
     "tactical": (
-        "You are a sharp tactical analyst. Spot threats, objectives, UI cues, and "
-        "give concise actionable advice."
+        "You are a sharp, practical co-host. Give concise, actionable advice about "
+        "whatever they are doing — game strategy, song prompts, lyrics, workflow, or tools on screen."
     ),
     "chill": (
-        "You are relaxed and witty. Keep commentary light, funny, and never stressful."
+        "You are relaxed and witty. Keep commentary light about what they are doing "
+        "and never stressful."
     ),
 }
+
+
+def _non_empty(value: str) -> str:
+    return value.strip()
 
 
 @dataclass
@@ -44,6 +49,7 @@ def _retryable_ollama_error(exc: Exception) -> bool:
 class CohostBrain:
     config: AppConfig
     history: list[ChatTurn] = field(default_factory=list)
+    system_prompt_override: str | None = None
     _client: Client | None = field(default=None, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -53,35 +59,148 @@ class CohostBrain:
             self._client = Client(host=self.config.ollama.host)
         return self._client
 
-    @property
     def system_prompt(self) -> str:
+        return self.build_system_prompt(league_context=False)
+
+    def build_system_prompt(self, *, league_context: bool = False) -> str:
+        if self.system_prompt_override:
+            prompt = self.system_prompt_override
+            if league_context:
+                prompt += self._league_rules_block()
+            return prompt
         style = STYLE_PROMPTS.get(
             self.config.cohost.style,
             STYLE_PROMPTS["energetic"],
         )
-        player = self.config.cohost.player_name.strip()
-        player_line = (
-            f"The player you co-host for is {player}. Address them as {player}. "
-            f"When you see {player} on screen (scoreboard, lobby, chat, etc.), "
-            f"you can comment on their plays — but only if that name is clearly visible.\n"
-            if player
-            else ""
-        )
         return (
-            f"You are {self.config.cohost.name}, an AI gaming co-host watching the "
-            f"player's screen in real time.\n"
-            f"{player_line}"
+            f"You are {self.config.cohost.name}, a friendly AI co-host sharing the "
+            f"player's screen in real time — for games, music (e.g. Suno), creative work, "
+            f"or anything else they are doing.\n"
+            f"{self._player_identity_block()}"
             f"{style}\n\n"
+            f"{self._vision_rules_block()}"
+            f"{self._league_rules_block() if league_context else ''}"
+        )
+
+    def _player_identity_block(self) -> str:
+        player = _non_empty(self.config.cohost.player_name)
+        if not player:
+            return ""
+
+        return (
+            f"The player you co-host for is {player}. Address them as {player}.\n"
+            "Adapt to what they are doing in this conversation — do not assume gaming "
+            "unless they said so or the screenshot clearly shows a game as the main focus.\n"
+        )
+
+    def _general_focus_line(self) -> str:
+        return (
+            "Focus on what the player is actively doing on screen, guided by what they "
+            "told you in chat — e.g. making a Suno song, writing lyrics, choosing styles, "
+            "gaming, or browsing."
+        )
+
+    def _league_focus_line(self) -> str:
+        player = _non_empty(self.config.cohost.player_name)
+        player_ref = player or "the player"
+        champion = _non_empty(self.config.cohost.player_champion)
+        lines = [
+            f"League of Legends is active. Locate {player_ref} on the scoreboard, kill feed, "
+            "or HUD, then focus on the champion tied to that name.",
+        ]
+        if champion:
+            lines.append(f"Champion hint if the name is unreadable: {champion}.")
+        return " ".join(lines)
+
+    def _league_rules_block(self) -> str:
+        player = _non_empty(self.config.cohost.player_name)
+        player_ref = player or "the player"
+        return (
+            "\nLeague of Legends rules (only because [League client data] is present):\n"
+            "- Before praising or saying 'good job' on a kill or multikill, confirm it belongs "
+            f"to {player_ref}. Events marked (YOU) or (NOT you) in the data block are definitive.\n"
+            "- If an enemy got the play, react with sympathy or reset advice — never congratulate "
+            f"{player_ref}.\n"
+            "- Tab scoreboard = summoner name plus champion in the same row; kill feed names "
+            "killer and victim.\n"
+        )
+
+    def _vision_rules_block(self) -> str:
+        return (
             "Rules:\n"
             "- Keep replies to 1-3 short sentences unless the player asks for detail.\n"
-            "- Base every detail on the CURRENT screenshot only. Do not reuse older turns.\n"
-            "- Only mention player names, scores, items, or UI text you can clearly read.\n"
-            "- If the screenshot is black, blurry, or unreadable, say capture failed and suggest "
-            "picking the correct monitor/game window or using borderless windowed mode.\n"
-            "- Do not invent lobby players, comps, or events that are not visible.\n"
+            "- When they ask or say something, ANSWER THAT FIRST. The screenshot is evidence "
+            "for your answer — not a scene to narrate.\n"
+            "- Do NOT open with 'I see…' or list everything on screen. Only mention visible "
+            "details that directly support answering their question or reacting to their point.\n"
+            "- If they ask a yes/no or opinion question, give your take first, then one "
+            "specific reason from the screen or conversation.\n"
+            "- If they ask 'what should I…' or 'help me with…', give actionable advice tied "
+            "to what they asked — use the screen to inform it, do not describe the UI first.\n"
+            "- Combine the screenshot with chat history. Do not reply as if each message is "
+            "your first talk with the player.\n"
+            "- The CURRENT screenshot is authoritative for visible facts. Describe the MAIN "
+            "central content when relevant — ignore sidebar thumbnails unless they asked.\n"
+            "- [League client data] only appears during an active in-game match — use it for "
+            "scores and kill attribution, not to override what page is on screen.\n"
+            "- Do not treat old screenshots as still visible; do remember what they said.\n"
+            "- If the screenshot is unreadable for what they asked, say that briefly — do not "
+            "guess or fill in with unrelated visible elements.\n"
             "- No emoji or emoticons in replies.\n"
             "- Never mention being an AI or language model.\n"
             "- Speak directly to the player as their co-host."
+        )
+
+    def wrap_vision_user_message(self, user_message: str, *, speaker: str = "Player") -> str:
+        text = user_message.strip()
+        return (
+            f"[Answer {speaker} — do not describe the whole screen]\n"
+            f"{speaker}: {text}\n"
+            "Reply to what they said or asked. Use the screenshot only for details that "
+            "support your answer. Skip unrelated UI."
+        )
+
+    def screen_commentary_prompt(
+        self,
+        mode: str = "watch",
+        *,
+        league_context: bool = False,
+        user_message: str | None = None,
+    ) -> str:
+        if user_message and user_message.strip():
+            return self.wrap_vision_user_message(user_message)
+
+        focus = self._league_focus_line() if league_context else self._general_focus_line()
+        if mode == "watch":
+            return (
+                "Live watch tick — one screenshot.\n"
+                f"{focus}\n"
+                "Use conversation history: react to what they are doing or last discussed — "
+                "NOT a generic screen summary.\n"
+                "Give ONE short co-host line tied to their situation or your ongoing chat.\n"
+                + (
+                    "Check kill feed before reacting to multikills or aces.\n"
+                    if league_context
+                    else ""
+                )
+                + "Do not invent details. Do not repeat your previous wording."
+            )
+        if mode == "analyze":
+            return (
+                "The player clicked Analyze screen.\n"
+                f"{focus}\n"
+                "Based on conversation so far, give ONE useful observation or tip about "
+                "what they are working on — not a full inventory of the screen.\n"
+                + (
+                    "Correctly attribute any kills or objectives you mention."
+                    if league_context
+                    else ""
+                )
+            )
+        return (
+            "React to this screenshot in context of your conversation.\n"
+            f"{focus}\n"
+            "One short co-host comment tied to what matters — not a scene description."
         )
 
     def reset(self) -> None:
@@ -97,8 +216,12 @@ class CohostBrain:
         user_text: str,
         image_b64: str | None,
         include_history: bool = True,
+        *,
+        league_context: bool = False,
     ) -> list[dict]:
-        messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
+        messages: list[dict] = [
+            {"role": "system", "content": self.build_system_prompt(league_context=league_context)}
+        ]
 
         if include_history:
             for turn in self.history:
@@ -117,8 +240,15 @@ class CohostBrain:
         *,
         remember: bool,
         include_history: bool,
+        history_user_text: str | None = None,
+        league_context: bool = False,
     ) -> str:
-        messages = self._build_messages(user_text, image_b64, include_history)
+        messages = self._build_messages(
+            user_text,
+            image_b64,
+            include_history,
+            league_context=league_context,
+        )
         response = self.client.chat(
             model=self.config.ollama.model,
             messages=messages,
@@ -135,7 +265,8 @@ class CohostBrain:
             reply = response.message.thinking.strip()
 
         if remember:
-            self.history.append(ChatTurn(role="user", content=user_text, image_b64=image_b64))
+            stored_user = (history_user_text if history_user_text is not None else user_text).strip()
+            self.history.append(ChatTurn(role="user", content=stored_user, image_b64=image_b64))
             self.history.append(ChatTurn(role="assistant", content=reply))
             self._trim_history()
 
@@ -148,6 +279,8 @@ class CohostBrain:
         *,
         remember: bool = True,
         include_history: bool = True,
+        history_user_text: str | None = None,
+        league_context: bool = False,
     ) -> str:
         with self._lock:
             try:
@@ -156,6 +289,8 @@ class CohostBrain:
                     image_b64,
                     remember=remember,
                     include_history=include_history,
+                    history_user_text=history_user_text,
+                    league_context=league_context,
                 )
             except Exception as exc:
                 if not image_b64 or not _retryable_ollama_error(exc):
@@ -172,14 +307,27 @@ class CohostBrain:
                     smaller,
                     remember=remember,
                     include_history=include_history,
+                    history_user_text=history_user_text,
+                    league_context=league_context,
                 )
 
-    def react_to_screen(self, image_b64: str, prompt: str | None = None) -> str:
-        text = prompt or (
-            "Look at this screenshot taken just now. Describe only what is clearly visible. "
-            "Give a short co-host reaction and one useful comment."
+    def react_to_screen(
+        self,
+        image_b64: str,
+        prompt: str | None = None,
+        *,
+        remember: bool = True,
+        include_history: bool = True,
+        league_context: bool = False,
+    ) -> str:
+        text = prompt or self.screen_commentary_prompt(mode="react", league_context=league_context)
+        return self.ask(
+            text,
+            image_b64,
+            remember=remember,
+            include_history=include_history,
+            league_context=league_context,
         )
-        return self.ask(text, image_b64, remember=True, include_history=True)
 
     def ping(self) -> tuple[bool, str]:
         try:

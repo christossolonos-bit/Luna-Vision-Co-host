@@ -19,8 +19,16 @@ screen:
 cohost:
   name: Luna
   player_name: your_gamertag
+  # Optional fallback if your name is not readable in a frame
+  player_champion: ""
   style: energetic
   max_history: 8
+
+league:
+  enabled: true
+  live_port: 2999
+  timeout_sec: 1.5
+  lockfile_paths: []
 
 vrm:
   model_path: "C:\\path\\to\\your\\model.vrm"
@@ -40,3 +48,24 @@ ui:
   host: 127.0.0.1
   port: 7860
   share: false
+
+twitch:
+  enabled: false
+  username: your_bot_username
+  oauth_token: oauth:your_token_from_twitchapps_com_tmi
+  channel: your_channel_name
+  client_id: ""
+  client_secret: ""
+  creator_name: ""
+  owner_login: ""
+  creator_aliases: ""
+  system_prompt: ""
+  persona: ""
+  voice_rules: ""
+  send_replies: true
+  auto_reply: true
+  auto_trigger: all
+  auto_cooldown_sec: 6
+  speak_replies: true
+  command_prefix: "!luna"
+  use_screen: true

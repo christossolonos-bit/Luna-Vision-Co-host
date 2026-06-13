@@ -15,10 +15,14 @@ from pydantic import BaseModel
 
 from luna.brain import CohostBrain
 from luna.config import AppConfig, load_config
+from luna.league_client import LeagueClient
 from luna.screen import CaptureResult, ScreenCapture
 from luna.speech import SpeechRecognizer
+from luna.twitch_persona import build_twitch_system_prompt, is_creator_login
 from luna.video_buffer import ScreenVideoBuffer
 from luna.voice import EdgeVoice
+
+from luna.twitch_chat import TwitchChatBot
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -79,6 +83,12 @@ class LunaService:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.brain = CohostBrain(config)
+        twitch_prompt = build_twitch_system_prompt(config.twitch) if config.twitch.enabled else None
+        self.twitch_brain = CohostBrain(
+            config,
+            system_prompt_override=twitch_prompt,
+        )
+        self.league = LeagueClient(config.league, config.cohost.player_name)
         self.screen = ScreenCapture(config.screen)
         self.video_buffer = ScreenVideoBuffer(self.screen, config.screen)
         self.voice = EdgeVoice(config.voice)
@@ -86,10 +96,74 @@ class LunaService:
         self._watch_lock = threading.Lock()
         self._watch_running = False
         self._last_frame_b64: str | None = None
+        self._capture_source = f"monitor:{config.screen.monitor}"
+        self._twitch_status = "Twitch: off"
 
     def status(self) -> dict[str, str | bool]:
         ok, message = self.brain.ping()
-        return {"ok": ok, "message": message}
+        league_line = self.league.status_line()
+        if league_line:
+            message = f"{message} | {league_line}"
+        if self.config.twitch.enabled:
+            message = f"{message} | {self._twitch_status}"
+        snap = self.league.snapshot()
+        return {
+            "ok": ok,
+            "message": message,
+            "league_active": snap.active,
+            "league_phase": snap.phase,
+            "twitch_enabled": self.config.twitch.enabled,
+        }
+
+    def set_twitch_status(self, message: str) -> None:
+        self._twitch_status = message
+
+    def twitch_chat_reply(self, username: str, message: str) -> str:
+        league_block = self._league_block()
+        league_context = bool(league_block)
+        creator_note = ", stream creator" if is_creator_login(username, self.config.twitch) else ""
+
+        image_b64 = None
+        prompt_parts: list[str] = []
+        if self.config.twitch.use_screen:
+            image_b64, vision_prefix = self._latest_vision_for_chat()
+            if vision_prefix:
+                prompt_parts.append(vision_prefix.rstrip())
+        elif league_block:
+            prompt_parts.append(league_block)
+
+        speaker = f"{username}{creator_note}"
+        prompt_parts.append(
+            self.brain.wrap_vision_user_message(message.strip(), speaker=speaker)
+            if self.config.twitch.use_screen
+            else f"[Twitch chat — {speaker}]: {message.strip()}"
+        )
+        prompt = "\n\n".join(prompt_parts)
+
+        return self.twitch_brain.ask(
+            prompt,
+            image_b64,
+            remember=True,
+            include_history=True,
+            history_user_text=f"{username}: {message.strip()}",
+            league_context=league_context,
+        )
+
+    def _remember_capture_source(self, capture_source: str) -> None:
+        if capture_source.strip():
+            self._capture_source = capture_source.strip()
+
+    def _latest_vision_for_chat(self) -> tuple[str | None, str]:
+        try:
+            result = self._vision_capture(self._capture_source)
+            league_block = self._league_block()
+            prefix = self._prompt_prefix(result, league_block=league_block)
+            return result.image_b64, prefix
+        except Exception:  # noqa: BLE001
+            return None, ""
+
+    def speak_text_for_obs(self, text: str) -> tuple[str | None, str | None]:
+        return self._speak_if_needed(text, speak=True)
 
     def capture_sources(self) -> list[dict[str, str]]:
         return self.screen.list_capture_sources()
@@ -116,6 +190,13 @@ class LunaService:
         self._last_frame_b64 = result.image_b64
         return result
 
+    def _vision_instruction(self) -> str:
+        return (
+            "Use this screenshot as evidence for your answer. Focus on the main central "
+            "area. Do not narrate the whole screen — only cite details relevant to what "
+            "the player asked or said."
+        )
+
     def _vision_prefix(self, result: CaptureResult) -> str:
         if result.is_blank:
             return (
@@ -125,7 +206,24 @@ class LunaService:
                 "that shows the game, or verify the correct screen is selected. "
                 "Do not invent game details.]\n"
             )
-        return f"[Live capture: {result.source_label}]\n"
+        return f"[Live capture: {result.source_label}]\n{self._vision_instruction()}\n"
+
+    def _prompt_prefix(
+        self,
+        result: CaptureResult | None = None,
+        *,
+        league_block: str | None = None,
+    ) -> str:
+        parts: list[str] = []
+        block = league_block if league_block is not None else self.league.context_block_for_vision()
+        if block:
+            parts.append(block)
+        if result is not None:
+            parts.append(self._vision_prefix(result).rstrip())
+        return "\n\n".join(part for part in parts if part) + ("\n" if parts else "")
+
+    def _league_block(self) -> str:
+        return self.league.context_block_for_vision()
 
     def _capture_response_meta(self, result: CaptureResult) -> dict[str, str | bool]:
         return {
@@ -146,15 +244,30 @@ class LunaService:
         image_b64 = None
         meta: dict[str, str | bool] = {}
         prompt = message.strip()
+        self._remember_capture_source(capture_source)
+        league_block = self._league_block()
+        league_context = bool(league_block)
 
         if use_screen:
             result = self._vision_capture(capture_source)
             image_b64 = result.image_b64
             meta = self._capture_response_meta(result)
-            prompt = self._vision_prefix(result) + prompt
+            prompt = (
+                self._prompt_prefix(result, league_block=league_block)
+                + self.brain.wrap_vision_user_message(message.strip())
+            )
+        else:
+            prefix = self._prompt_prefix(league_block=league_block)
+            if prefix:
+                prompt = prefix + prompt
 
         try:
-            reply = self.brain.ask(prompt, image_b64)
+            reply = self.brain.ask(
+                prompt,
+                image_b64,
+                history_user_text=message.strip(),
+                league_context=league_context,
+            )
             audio_b64, audio_format = self._speak_if_needed(reply, speak)
             return {
                 "reply": reply,
@@ -173,13 +286,21 @@ class LunaService:
 
     def analyze(self, capture_source: str, style: str, speak: bool) -> dict[str, str | bool | None]:
         self.config.cohost.style = style
+        self._remember_capture_source(capture_source)
         result = self._vision_capture(capture_source)
-        prompt = self._vision_prefix(result) + (
-            "Look at this frame from the live video stream taken just now. "
-            "Describe only what is clearly visible."
+        league_block = self._league_block()
+        league_context = bool(league_block)
+        prompt = self._prompt_prefix(result, league_block=league_block) + self.brain.screen_commentary_prompt(
+            mode="analyze",
+            league_context=league_context,
         )
         try:
-            reply = self.brain.ask(prompt, result.image_b64)
+            reply = self.brain.ask(
+                prompt,
+                result.image_b64,
+                history_user_text="[Analyze screen]",
+                league_context=league_context,
+            )
             audio_b64, audio_format = self._speak_if_needed(reply, speak)
             return {
                 "reply": reply,
@@ -209,14 +330,22 @@ class LunaService:
 
         try:
             self.config.cohost.style = style
+            self._remember_capture_source(capture_source)
             result: CaptureResult | None = None
             result = self._vision_capture(capture_source)
-            prompt = self._vision_prefix(result) + (
-                "You are watching live gameplay from a rolling video stream. "
-                "Give a short co-host line about what is clearly visible. "
-                "Do not invent details. Avoid repeating your last comment."
+            league_block = self._league_block()
+            league_context = bool(league_block)
+            prompt = self._prompt_prefix(result, league_block=league_block) + self.brain.screen_commentary_prompt(
+                mode="watch",
+                league_context=league_context,
             )
-            reply = self.brain.ask(prompt, result.image_b64)
+            reply = self.brain.ask(
+                prompt,
+                result.image_b64,
+                remember=False,
+                include_history=True,
+                league_context=league_context,
+            )
             audio_b64, audio_format = self._speak_if_needed(reply, speak)
             return {
                 "reply": reply,
@@ -249,6 +378,7 @@ class LunaService:
 
     def reset(self) -> None:
         self.brain.reset()
+        self.twitch_brain.reset()
 
     def _speak_if_needed(self, text: str, speak: bool) -> tuple[str | None, str | None]:
         if not speak or not text.strip():
@@ -263,11 +393,19 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     cfg = config or load_config()
     service = LunaService(cfg)
     obs_relay = ObsRelay()
+    twitch_bot = TwitchChatBot(
+        cfg.twitch,
+        service,
+        obs_relay,
+        on_status=service.set_twitch_status,
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         service.video_buffer.start()
+        await twitch_bot.start()
         yield
+        await twitch_bot.stop()
         service.video_buffer.stop()
         service.voice.shutdown()
 

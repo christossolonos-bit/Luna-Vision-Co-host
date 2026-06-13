@@ -110,11 +110,8 @@ class LunaApp:
             preview, label = self.capture_frame(monitor_index)
             reply = self.brain.react_to_screen(
                 self._last_frame_b64 or "",
-                prompt=(
-                    "You are watching live gameplay. Give a short, varied co-host line "
-                    "about what changed or what the player should notice. Avoid repeating "
-                    "your last comment."
-                ),
+                remember=False,
+                include_history=True,
             )
             user_line = f"[Auto watch — {label}]"
             updated = _format_chat(history, user_line, reply)
