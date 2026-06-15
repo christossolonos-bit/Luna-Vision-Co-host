@@ -148,6 +148,8 @@ body {
   display: grid;
   grid-template-rows: auto 1fr auto;
   gap: 10px;
+  z-index: 15;
+  pointer-events: auto;
 }
 
 #dock-top {
@@ -266,6 +268,32 @@ body {
 
 .send-btn {
   background: linear-gradient(135deg, rgba(94, 231, 255, 0.25), rgba(167, 139, 250, 0.25));
+}
+
+.screen-toggle.active {
+  border-color: rgba(94, 231, 255, 0.55);
+  background: linear-gradient(135deg, rgba(94, 231, 255, 0.2), rgba(167, 139, 250, 0.15));
+  color: #8ef5c0;
+}
+
+.screen-toggle:not(.active) {
+  border-color: rgba(255, 107, 138, 0.35);
+}
+
+.screen-toggle:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.custom-select.disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.ghost-btn:disabled,
+.custom-select-trigger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .mic-btn {

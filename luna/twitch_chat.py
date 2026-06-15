@@ -7,6 +7,7 @@ import time
 from typing import TYPE_CHECKING, Callable
 
 from luna.config import TwitchConfig
+from luna.voice_tags import strip_tags_for_display
 
 if TYPE_CHECKING:
     from luna.server import LunaService, ObsRelay
@@ -39,7 +40,11 @@ class TwitchChatBot:
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._last_reply_at = 0.0
+        self._last_channel_message_at = 0.0
+        self._last_idle_talk_at = 0.0
         self._connected = False
+        self._busy = False
+        self._idle_task: asyncio.Task | None = None
 
     @property
     def connected(self) -> bool:
@@ -62,10 +67,19 @@ class TwitchChatBot:
             self._set_status("Twitch: missing credentials")
             return
         self._stop.clear()
+        self._last_channel_message_at = time.time()
         self._task = asyncio.create_task(self._run_loop(), name="twitch-chat")
+        self._idle_task = asyncio.create_task(self._idle_loop(), name="twitch-idle")
 
     async def stop(self) -> None:
         self._stop.set()
+        if self._idle_task is not None:
+            self._idle_task.cancel()
+            try:
+                await self._idle_task
+            except asyncio.CancelledError:
+                pass
+            self._idle_task = None
         if self._task is not None:
             self._task.cancel()
             try:
@@ -161,6 +175,7 @@ class TwitchChatBot:
         text = match.group("text").strip()
         if not text or user.lower() == self.config.username.strip().lower():
             return
+        self._last_channel_message_at = time.time()
         if not self._should_reply(user, text):
             return
 
@@ -186,21 +201,74 @@ class TwitchChatBot:
         return True
 
     async def _handle_message(self, user: str, text: str) -> None:
+        self._busy = True
         try:
             reply = await asyncio.to_thread(self.service.twitch_chat_reply, user, text)
+            if not reply:
+                return
+
+            if self.config.send_replies:
+                try:
+                    await self._send_chat(
+                        strip_tags_for_display(
+                            reply,
+                            enabled=self.service.config.voice.use_delivery_tags,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("Twitch send failed: %s", exc)
+
+            await self._speak_reply(reply)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Twitch reply failed: %s", exc)
-            return
+        finally:
+            self._busy = False
 
-        if not reply:
-            return
-
-        if self.config.send_replies:
+    async def _idle_loop(self) -> None:
+        while not self._stop.is_set():
             try:
-                await self._send_chat(reply)
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("Twitch send failed: %s", exc)
+                await asyncio.sleep(5)
+                if not self.config.idle_talk or not self._connected or self._busy:
+                    continue
 
+                now = time.time()
+                quiet_for = now - self._last_channel_message_at
+                if quiet_for < self.config.idle_talk_quiet_sec:
+                    continue
+                if now - self._last_idle_talk_at < self.config.idle_talk_cooldown_sec:
+                    continue
+
+                self._busy = True
+                try:
+                    reply = await asyncio.to_thread(self.service.twitch_idle_talk)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("Twitch idle talk failed: %s", exc)
+                    continue
+                finally:
+                    self._busy = False
+
+                if not reply:
+                    continue
+
+                self._last_idle_talk_at = time.time()
+                if self.config.idle_talk_send_chat and self.config.send_replies:
+                    try:
+                        await self._send_chat(
+                            strip_tags_for_display(
+                                reply,
+                                enabled=self.service.config.voice.use_delivery_tags,
+                            )
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.exception("Twitch idle send failed: %s", exc)
+
+                await self._speak_reply(reply)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Twitch idle loop error: %s", exc)
+
+    async def _speak_reply(self, reply: str) -> None:
         if not self.config.speak_replies:
             return
 

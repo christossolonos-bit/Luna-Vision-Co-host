@@ -3,9 +3,11 @@ mss>=9.0.0
 pillow>=10.0.0
 pyyaml>=6.0
 edge-tts>=7.0.0
+coqui-tts>=0.27.0
 faster-whisper>=1.0.0
 fastapi>=0.115.0
 uvicorn>=0.32.0
 python-multipart>=0.0.9
 opencv-python-headless>=4.8.0
 pywin32>=306
+# Optional: pip install elevenlabs  (only if voice.provider is elevenlabs)

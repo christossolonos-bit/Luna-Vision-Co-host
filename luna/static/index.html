@@ -35,12 +35,30 @@
         </select>
       </label>
       <label class="check-row">
-        <input type="checkbox" id="use-screen" checked />
+        <input type="checkbox" id="screen-capture-setting" />
+        Screen capture (vision)
+      </label>
+      <label class="check-row">
+        <input type="checkbox" id="use-screen" />
         Include screen in chat
+      </label>
+      <label>
+        Voice mood
+        <select id="voice-mood">
+          <option value="neutral">Neutral</option>
+          <option value="excitement">Excitement</option>
+          <option value="anger">Anger</option>
+          <option value="sadness">Sadness</option>
+          <option value="happy">Happy</option>
+          <option value="joy">Joy</option>
+          <option value="curiosity">Curiosity</option>
+          <option value="flirty">Flirty</option>
+          <option value="seductive">Seductive</option>
+        </select>
       </label>
       <label class="check-row">
         <input type="checkbox" id="speak-replies" checked />
-        Speak replies (Edge TTS)
+        Speak replies
       </label>
       <label class="check-row">
         <input type="checkbox" id="watch-enabled" />
@@ -60,7 +78,10 @@
     <div id="dock">
       <div id="dock-top">
         <div class="dock-group capture-group">
-          <span class="dock-label">Screen share</span>
+          <button id="screen-capture-toggle" type="button" class="ghost-btn screen-toggle" title="Turn screen capture on or off">
+            Screen: OFF
+          </button>
+          <span class="dock-label">Source</span>
           <div class="custom-select" id="capture-select">
             <button
               type="button"
@@ -98,6 +119,6 @@
     </div>
   </div>
 
-  <script type="module" src="/static/app.js"></script>
+  <script type="module" src="/static/app.js?v=20260608"></script>
 </body>
 </html>

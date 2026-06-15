@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import threading
 import time
 from pathlib import Path
@@ -18,13 +19,15 @@ from luna.config import AppConfig, load_config
 from luna.league_client import LeagueClient
 from luna.screen import CaptureResult, ScreenCapture
 from luna.speech import SpeechRecognizer
-from luna.twitch_persona import build_twitch_system_prompt, is_creator_login
+from luna.twitch_persona import build_idle_user_message, build_twitch_system_prompt, is_creator_login, pick_idle_topic
 from luna.video_buffer import ScreenVideoBuffer
-from luna.voice import EdgeVoice
-
+from luna.voice_tags import strip_tags_for_display
 from luna.twitch_chat import TwitchChatBot
+from luna.voice import create_voice
+from luna.voice_mood import list_moods, normalize_mood
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+logger = logging.getLogger(__name__)
 
 
 class ChatRequest(BaseModel):
@@ -43,10 +46,19 @@ class AnalyzeRequest(BaseModel):
 
 class TTSRequest(BaseModel):
     text: str
+    mood: str | None = None
+
+
+class MoodRequest(BaseModel):
+    mood: str
 
 
 class ObsTTSRequest(BaseModel):
     audio_b64: str
+
+
+class ScreenCaptureRequest(BaseModel):
+    enabled: bool
 
 
 class ObsRelay:
@@ -91,13 +103,28 @@ class LunaService:
         self.league = LeagueClient(config.league, config.cohost.player_name)
         self.screen = ScreenCapture(config.screen)
         self.video_buffer = ScreenVideoBuffer(self.screen, config.screen)
-        self.voice = EdgeVoice(config.voice)
+        self.voice = create_voice(config.voice)
         self.speech = SpeechRecognizer(config.speech)
         self._watch_lock = threading.Lock()
         self._watch_running = False
+        self._idle_topic_index = 0
         self._last_frame_b64: str | None = None
         self._capture_source = f"monitor:{config.screen.monitor}"
         self._twitch_status = "Twitch: off"
+        self._screen_capture_enabled = config.screen.capture_enabled
+
+    @property
+    def screen_capture_enabled(self) -> bool:
+        return self._screen_capture_enabled
+
+    def set_screen_capture(self, enabled: bool) -> None:
+        self._screen_capture_enabled = enabled
+        if enabled:
+            self.video_buffer.start()
+            logger.info("Screen capture enabled — background vision buffer started")
+        else:
+            self.video_buffer.stop()
+            logger.info("Screen capture disabled — background vision buffer stopped")
 
     def status(self) -> dict[str, str | bool]:
         ok, message = self.brain.ping()
@@ -113,6 +140,7 @@ class LunaService:
             "league_active": snap.active,
             "league_phase": snap.phase,
             "twitch_enabled": self.config.twitch.enabled,
+            "screen_capture_enabled": self.screen_capture_enabled,
         }
 
     def set_twitch_status(self, message: str) -> None:
@@ -125,7 +153,7 @@ class LunaService:
 
         image_b64 = None
         prompt_parts: list[str] = []
-        if self.config.twitch.use_screen:
+        if self.config.twitch.use_screen and self.screen_capture_enabled:
             image_b64, vision_prefix = self._latest_vision_for_chat()
             if vision_prefix:
                 prompt_parts.append(vision_prefix.rstrip())
@@ -133,9 +161,10 @@ class LunaService:
             prompt_parts.append(league_block)
 
         speaker = f"{username}{creator_note}"
+        use_vision = self.config.twitch.use_screen and self.screen_capture_enabled
         prompt_parts.append(
             self.brain.wrap_vision_user_message(message.strip(), speaker=speaker)
-            if self.config.twitch.use_screen
+            if use_vision
             else f"[Twitch chat — {speaker}]: {message.strip()}"
         )
         prompt = "\n\n".join(prompt_parts)
@@ -146,6 +175,37 @@ class LunaService:
             remember=True,
             include_history=True,
             history_user_text=f"{username}: {message.strip()}",
+            league_context=league_context,
+        )
+
+    def twitch_idle_talk(self) -> str:
+        topic, self._idle_topic_index = pick_idle_topic(self._idle_topic_index)
+        league_block = self._league_block()
+        league_context = bool(league_block)
+        image_b64 = None
+        prompt_parts: list[str] = []
+
+        use_screen = (
+            self.screen_capture_enabled
+            and self.config.twitch.idle_talk_use_screen
+            and self.config.twitch.use_screen
+        )
+        if use_screen:
+            image_b64, vision_prefix = self._latest_vision_for_chat()
+            if vision_prefix:
+                prompt_parts.append(vision_prefix.rstrip())
+        elif league_block:
+            prompt_parts.append(league_block)
+
+        prompt_parts.append(build_idle_user_message(topic))
+        prompt = "\n\n".join(prompt_parts)
+
+        return self.twitch_brain.ask(
+            prompt,
+            image_b64,
+            remember=True,
+            include_history=True,
+            history_user_text="[Chat quiet — Luna speaks unprompted]",
             league_context=league_context,
         )
 
@@ -169,6 +229,8 @@ class LunaService:
         return self.screen.list_capture_sources()
 
     def capture_preview(self, source: str) -> dict[str, str | bool]:
+        if not self.screen_capture_enabled:
+            return {"image_b64": "", "label": "Screen capture off", "is_blank": True}
         self.video_buffer.set_source(source)
         result = self.video_buffer.get_latest_frame()
         if result is None:
@@ -181,6 +243,8 @@ class LunaService:
         }
 
     def _vision_capture(self, capture_source: str) -> CaptureResult:
+        if not self.screen_capture_enabled:
+            raise RuntimeError("Screen capture is off. Turn it on to use vision.")
         self.video_buffer.set_source(capture_source)
         if not self.video_buffer.running:
             self.video_buffer.start()
@@ -248,7 +312,7 @@ class LunaService:
         league_block = self._league_block()
         league_context = bool(league_block)
 
-        if use_screen:
+        if use_screen and self.screen_capture_enabled:
             result = self._vision_capture(capture_source)
             image_b64 = result.image_b64
             meta = self._capture_response_meta(result)
@@ -270,7 +334,7 @@ class LunaService:
             )
             audio_b64, audio_format = self._speak_if_needed(reply, speak)
             return {
-                "reply": reply,
+                "reply": strip_tags_for_display(reply, enabled=self.config.voice.use_delivery_tags),
                 "audio_b64": audio_b64,
                 "audio_format": audio_format,
                 **meta,
@@ -285,6 +349,13 @@ class LunaService:
             }
 
     def analyze(self, capture_source: str, style: str, speak: bool) -> dict[str, str | bool | None]:
+        if not self.screen_capture_enabled:
+            return {
+                "reply": "Screen capture is off — turn it on in the dock to analyze your screen.",
+                "audio_b64": None,
+                "audio_format": None,
+                "error": True,
+            }
         self.config.cohost.style = style
         self._remember_capture_source(capture_source)
         result = self._vision_capture(capture_source)
@@ -303,7 +374,7 @@ class LunaService:
             )
             audio_b64, audio_format = self._speak_if_needed(reply, speak)
             return {
-                "reply": reply,
+                "reply": strip_tags_for_display(reply, enabled=self.config.voice.use_delivery_tags),
                 "audio_b64": audio_b64,
                 "audio_format": audio_format,
                 **self._capture_response_meta(result),
@@ -323,6 +394,8 @@ class LunaService:
         style: str,
         speak: bool,
     ) -> dict[str, str | bool | None]:
+        if not self.screen_capture_enabled:
+            return {"reply": "", "audio_b64": None, "skipped": True}
         with self._watch_lock:
             if self._watch_running:
                 return {"reply": "", "audio_b64": None, "skipped": True}
@@ -348,7 +421,7 @@ class LunaService:
             )
             audio_b64, audio_format = self._speak_if_needed(reply, speak)
             return {
-                "reply": reply,
+                "reply": strip_tags_for_display(reply, enabled=self.config.voice.use_delivery_tags),
                 "audio_b64": audio_b64,
                 "audio_format": audio_format,
                 "timestamp": time.strftime("%H:%M:%S"),
@@ -373,8 +446,18 @@ class LunaService:
     def transcribe(self, payload: bytes, suffix: str) -> str:
         return self.speech.transcribe_bytes(payload, suffix=suffix)
 
-    def tts(self, text: str) -> bytes:
-        return self.voice.synthesize(text)
+    def tts(self, text: str, mood: str | None = None) -> bytes:
+        return self.voice.synthesize(text, mood=mood)
+
+    def set_voice_mood(self, mood: str) -> str:
+        self.voice.set_mood(mood)
+        return normalize_mood(mood, self.config.voice.default_mood)
+
+    def get_voice_mood(self) -> str:
+        getter = getattr(self.voice, "get_mood", None)
+        if callable(getter):
+            return getter()
+        return self.config.voice.default_mood
 
     def reset(self) -> None:
         self.brain.reset()
@@ -402,7 +485,9 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        service.video_buffer.start()
+        if service.screen_capture_enabled:
+            service.video_buffer.start()
+        service.voice.start()
         await twitch_bot.start()
         yield
         await twitch_bot.stop()
@@ -430,6 +515,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.get("/api/preview")
     async def api_preview(source: str = "monitor:1") -> dict[str, str | bool]:
         return service.capture_preview(source)
+
+    @app.post("/api/screen-capture")
+    async def api_screen_capture(body: ScreenCaptureRequest) -> dict[str, bool]:
+        service.set_screen_capture(body.enabled)
+        return {"enabled": service.screen_capture_enabled}
 
     @app.post("/api/chat")
     async def api_chat(body: ChatRequest) -> dict[str, str | bool | None]:
@@ -465,8 +555,23 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.post("/api/tts")
     async def api_tts(body: TTSRequest) -> Response:
-        audio = service.voice.synthesize(body.text)
-        return Response(content=audio, media_type="audio/mpeg")
+        audio = service.tts(body.text, mood=body.mood)
+        media_type = "audio/wav" if service.voice.audio_format == "wav" else "audio/mpeg"
+        return Response(content=audio, media_type=media_type)
+
+    @app.get("/api/voice/moods")
+    async def api_voice_moods() -> dict[str, list[str] | str | bool]:
+        return {
+            "moods": list_moods(),
+            "current": service.get_voice_mood(),
+            "provider": cfg.voice.provider,
+            "auto_mood": cfg.voice.auto_mood,
+        }
+
+    @app.post("/api/voice/mood")
+    async def api_voice_mood(body: MoodRequest) -> dict[str, str]:
+        mood = service.set_voice_mood(body.mood)
+        return {"mood": mood}
 
     @app.post("/api/stt")
     async def api_stt(file: UploadFile = File(...)) -> dict[str, str]:
@@ -490,13 +595,17 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return FileResponse(path, media_type="application/octet-stream", filename=path.name)
 
     @app.get("/api/config")
-    async def api_config() -> dict[str, str | float | bool]:
+    async def api_config() -> dict[str, str | float | bool | list[str]]:
         return {
             "name": cfg.cohost.name,
             "player_name": cfg.cohost.player_name,
             "style": cfg.cohost.style,
             "voice": cfg.voice.edge_voice,
+            "voice_provider": cfg.voice.provider,
+            "voice_mood": service.get_voice_mood(),
+            "voice_moods": list_moods(),
             "watch_interval_sec": cfg.screen.capture_interval_sec,
+            "screen_capture_enabled": service.screen_capture_enabled,
         }
 
     @app.post("/api/obs/heartbeat")

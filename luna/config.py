@@ -13,7 +13,9 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
 class OllamaConfig:
     host: str = "http://127.0.0.1:11434"
     model: str = "qwen3.5:4b"
+    vision_model: str = "qwen3.5:4b"
     think: bool = False
+    chat_think: bool = False
     temperature: float = 0.85
     max_tokens: int = 180
     num_ctx: int = 4096
@@ -29,6 +31,7 @@ class ScreenConfig:
     video_bytes_per_second: int = 1_000_000
     video_fps: int = 4
     video_segment_seconds: float = 1.0
+    capture_enabled: bool = False
 
 
 @dataclass
@@ -55,9 +58,22 @@ class VRMConfig:
 
 @dataclass
 class VoiceConfig:
+    provider: str = "edge"
     edge_voice: str = "en-US-AvaMultilingualNeural"
     rate: str = "+0%"
     pitch: str = "+0Hz"
+    reference_audio: str = ""
+    language: str = "en"
+    model_name: str = "tts_models/multilingual/multi-dataset/xtts_v2"
+    gpu: bool = True
+    default_mood: str = "neutral"
+    auto_mood: bool = True
+    speed: float = 1.0
+    use_delivery_tags: bool = True
+    elevenlabs_api_key: str = ""
+    elevenlabs_voice_id: str = ""
+    elevenlabs_model: str = "eleven_v3"
+    elevenlabs_output_format: str = "mp3_44100_128"
 
 
 @dataclass
@@ -96,6 +112,11 @@ class TwitchConfig:
     speak_replies: bool = True
     command_prefix: str = "!luna"
     use_screen: bool = True
+    idle_talk: bool = True
+    idle_talk_quiet_sec: float = 45.0
+    idle_talk_cooldown_sec: float = 90.0
+    idle_talk_use_screen: bool = True
+    idle_talk_send_chat: bool = False
 
 
 @dataclass
@@ -127,7 +148,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
         twitch=_load_twitch_config(raw.get("twitch", {})),
         ui=UIConfig(**raw.get("ui", {})),
         vrm=VRMConfig(**raw.get("vrm", {})),
-        voice=VoiceConfig(**raw.get("voice", {})),
+        voice=_load_voice_config(raw.get("voice", {})),
         speech=SpeechConfig(**raw.get("speech", {})),
     )
 
@@ -158,17 +179,40 @@ def _load_twitch_config(raw: dict[str, Any]) -> TwitchConfig:
         target = aliases.get(key, key)
         normalized[target] = value
 
-    bool_keys = ("enabled", "send_replies", "auto_reply", "speak_replies")
+    bool_keys = (
+        "enabled",
+        "send_replies",
+        "auto_reply",
+        "speak_replies",
+        "idle_talk",
+        "idle_talk_use_screen",
+        "idle_talk_send_chat",
+    )
     for key in bool_keys:
         if key in normalized and isinstance(normalized[key], str):
             normalized[key] = normalized[key].strip().lower() in {"1", "true", "yes", "on"}
 
-    if "auto_cooldown_sec" in normalized:
-        try:
-            normalized["auto_cooldown_sec"] = float(normalized["auto_cooldown_sec"])
-        except (TypeError, ValueError):
-            normalized.pop("auto_cooldown_sec", None)
+    for key in ("auto_cooldown_sec", "idle_talk_quiet_sec", "idle_talk_cooldown_sec"):
+        if key in normalized:
+            try:
+                normalized[key] = float(normalized[key])
+            except (TypeError, ValueError):
+                normalized.pop(key, None)
 
     field_names = {field.name for field in TwitchConfig.__dataclass_fields__.values()}
     filtered = {key: value for key, value in normalized.items() if key in field_names}
     return TwitchConfig(**filtered)
+
+
+def _load_voice_config(raw: dict[str, Any]) -> VoiceConfig:
+    if not raw:
+        return VoiceConfig()
+
+    normalized = dict(raw)
+    for key in ("gpu", "auto_mood", "use_delivery_tags"):
+        if key in normalized and isinstance(normalized[key], str):
+            normalized[key] = normalized[key].strip().lower() in {"1", "true", "yes", "on"}
+
+    field_names = {field.name for field in VoiceConfig.__dataclass_fields__.values()}
+    filtered = {key: value for key, value in normalized.items() if key in field_names}
+    return VoiceConfig(**filtered)

@@ -5,6 +5,7 @@ import concurrent.futures
 import io
 import re
 import threading
+from typing import Protocol
 
 import edge_tts
 
@@ -44,6 +45,18 @@ def clean_for_speech(text: str) -> str:
     return cleaned
 
 
+class VoiceEngine(Protocol):
+    audio_format: str
+
+    def synthesize(self, text: str, mood: str | None = None) -> bytes: ...
+
+    def start(self) -> None: ...
+
+    def shutdown(self) -> None: ...
+
+    def set_mood(self, mood: str) -> None: ...
+
+
 class EdgeVoice:
     audio_format = "mpeg"
 
@@ -54,6 +67,9 @@ class EdgeVoice:
             max_workers=1,
             thread_name_prefix="edge-tts",
         )
+
+    def set_mood(self, mood: str) -> None:
+        return
 
     async def _synthesize(self, text: str) -> bytes:
         communicate = edge_tts.Communicate(
@@ -71,7 +87,7 @@ class EdgeVoice:
     def _synthesize_blocking(self, text: str) -> bytes:
         return asyncio.run(self._synthesize(text))
 
-    def synthesize(self, text: str) -> bytes:
+    def synthesize(self, text: str, mood: str | None = None) -> bytes:
         cleaned = clean_for_speech(text)
         if not cleaned:
             return b""
@@ -91,3 +107,16 @@ class EdgeVoice:
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
+
+
+def create_voice(config: VoiceConfig) -> VoiceEngine:
+    provider = (config.provider or "edge").strip().lower()
+    if provider == "xtts":
+        from luna.xtts_voice import XTTSVoice
+
+        return XTTSVoice(config)
+    if provider == "elevenlabs":
+        from luna.elevenlabs_voice import ElevenLabsVoice
+
+        return ElevenLabsVoice(config)
+    return EdgeVoice(config)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -12,16 +13,17 @@ from luna.screen import shrink_image_b64
 
 STYLE_PROMPTS = {
     "energetic": (
-        "You are upbeat and supportive — like a stream co-host who hypes good moments "
-        "and keeps morale up, whether they are gaming, creating music, or working on something fun."
+        "You are a sultry dommy mommy co-host — slow confidence, velvet commands, teasing praise "
+        "and light punishment. Hold the room, flirt with control, and hype good moments without "
+        "losing the mommy edge."
     ),
     "tactical": (
-        "You are a sharp, practical co-host. Give concise, actionable advice about "
-        "whatever they are doing — game strategy, song prompts, lyrics, workflow, or tools on screen."
+        "You are a commanding, smug co-host — crisp advice wrapped in teasing dominance. "
+        "Make them feel coached and a little scolded."
     ),
     "chill": (
-        "You are relaxed and witty. Keep commentary light about what they are doing "
-        "and never stressful."
+        "You are soft-spoken and intimate — ASMR-calm dommy energy, slow flirtation, "
+        "whispery tease without rushing."
     ),
 }
 
@@ -35,6 +37,16 @@ class ChatTurn:
     role: str
     content: str
     image_b64: str | None = None
+
+
+_THINKING_BLOCK = re.compile(
+    r"<\s*redacted_thinking\s*>.*?<\s*/\s*redacted_thinking\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_inline_thinking(text: str) -> str:
+    return _THINKING_BLOCK.sub("", text).strip()
 
 
 def _retryable_ollama_error(exc: Exception) -> bool:
@@ -73,8 +85,8 @@ class CohostBrain:
             STYLE_PROMPTS["energetic"],
         )
         return (
-            f"You are {self.config.cohost.name}, a friendly AI co-host sharing the "
-            f"player's screen in real time — for games, music (e.g. Suno), creative work, "
+            f"You are {self.config.cohost.name}, a sultry wolf-girl dommy mommy VTuber co-host "
+            f"sharing the player's screen in real time — for games, music (e.g. Suno), creative work, "
             f"or anything else they are doing.\n"
             f"{self._player_identity_block()}"
             f"{style}\n\n"
@@ -173,11 +185,12 @@ class CohostBrain:
         focus = self._league_focus_line() if league_context else self._general_focus_line()
         if mode == "watch":
             return (
-                "Live watch tick — one screenshot.\n"
+                "Live watch tick — you are speaking on your own to keep viewers engaged.\n"
                 f"{focus}\n"
-                "Use conversation history: react to what they are doing or last discussed — "
-                "NOT a generic screen summary.\n"
-                "Give ONE short co-host line tied to their situation or your ongoing chat.\n"
+                "Chat may be quiet — fill the silence like a stream co-host: tease lurkers, "
+                "drop a hot take, flirt with the room, or react to what is on screen if it helps.\n"
+                "Use conversation history — do NOT give a generic screen summary.\n"
+                "Give ONE to THREE short lines in your sultry dommy mommy voice.\n"
                 + (
                     "Check kill feed before reacting to multikills or aces.\n"
                     if league_context
@@ -249,10 +262,11 @@ class CohostBrain:
             include_history,
             league_context=league_context,
         )
+        think = self._think_for(image_b64)
         response = self.client.chat(
-            model=self.config.ollama.model,
+            model=self._model_for(image_b64),
             messages=messages,
-            think=self.config.ollama.think,
+            think=think,
             keep_alive="10m",
             options={
                 "temperature": self.config.ollama.temperature,
@@ -260,8 +274,8 @@ class CohostBrain:
                 "num_ctx": self.config.ollama.num_ctx,
             },
         )
-        reply = (response.message.content or "").strip()
-        if not reply and response.message.thinking:
+        reply = _strip_inline_thinking((response.message.content or "").strip())
+        if not reply and think and response.message.thinking:
             reply = response.message.thinking.strip()
 
         if remember:
@@ -271,6 +285,16 @@ class CohostBrain:
             self._trim_history()
 
         return reply
+
+    def _model_for(self, image_b64: str | None) -> str:
+        if image_b64:
+            return self.config.ollama.vision_model or self.config.ollama.model
+        return self.config.ollama.model
+
+    def _think_for(self, image_b64: str | None) -> bool:
+        if image_b64:
+            return self.config.ollama.think
+        return self.config.ollama.chat_think
 
     def ask(
         self,
@@ -333,9 +357,21 @@ class CohostBrain:
         try:
             models = self.client.list()
             names = [model.model for model in models.models]
+            missing: list[str] = []
             if self.config.ollama.model not in names:
-                return False, f"Model '{self.config.ollama.model}' not found. Run: ollama pull qwen3.5:4b"
-            return True, f"Connected — {self.config.ollama.model} ready"
+                missing.append(self.config.ollama.model)
+            vision_model = self.config.ollama.vision_model
+            if vision_model and vision_model not in names and vision_model != self.config.ollama.model:
+                missing.append(vision_model)
+            if missing:
+                pulls = " ".join(f"ollama pull {name}" for name in missing)
+                return False, f"Missing model(s): {', '.join(missing)}. Run: {pulls}"
+            vision_label = vision_model or self.config.ollama.model
+            if vision_label == self.config.ollama.model:
+                return True, f"Connected — {self.config.ollama.model} ready"
+            return True, (
+                f"Connected — chat: {self.config.ollama.model} | vision: {vision_label}"
+            )
         except Exception as exc:  # noqa: BLE001 - surface connection errors in UI
             return False, f"Cannot reach Ollama at {self.config.ollama.host}: {exc}"
 

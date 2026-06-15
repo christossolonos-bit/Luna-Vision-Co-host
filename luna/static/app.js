@@ -24,6 +24,7 @@ if (isObsOverlay) {
 const state = {
   busy: false,
   watchTimer: null,
+  screenCaptureEnabled: false,
   mediaRecorder: null,
   micStream: null,
   recordedChunks: [],
@@ -39,7 +40,9 @@ const els = {
   settingsBtn: document.getElementById("settings-btn"),
   settingsPanel: document.getElementById("settings-panel"),
   styleSelect: document.getElementById("style-select"),
+  voiceMood: document.getElementById("voice-mood"),
   useScreen: document.getElementById("use-screen"),
+  screenCaptureSetting: document.getElementById("screen-capture-setting"),
   speakReplies: document.getElementById("speak-replies"),
   watchEnabled: document.getElementById("watch-enabled"),
   watchInterval: document.getElementById("watch-interval"),
@@ -48,6 +51,7 @@ const els = {
   captureTrigger: document.getElementById("capture-trigger"),
   captureMenu: document.getElementById("capture-menu"),
   captureSelect: document.getElementById("capture-select"),
+  screenCaptureToggle: document.getElementById("screen-capture-toggle"),
   analyzeBtn: document.getElementById("analyze-btn"),
   micBtn: document.getElementById("mic-btn"),
   micStatus: document.getElementById("mic-status"),
@@ -143,6 +147,12 @@ function setStatus(text, ok = true) {
   els.status.classList.toggle("error", !ok);
 }
 
+function statusWithCapture(baseMessage, ok = true) {
+  const capture = state.screenCaptureEnabled ? "Screen ON" : "Screen OFF";
+  const sep = baseMessage.includes("|") ? " | " : " — ";
+  return `${baseMessage}${sep}${capture}`;
+}
+
 function payloadBase() {
   return {
     capture_source: els.captureSource.value,
@@ -154,7 +164,11 @@ function payloadBase() {
 async function refreshStatus() {
   try {
     const data = await api("/api/status");
-    setStatus(data.message, data.ok);
+    if (typeof data.screen_capture_enabled === "boolean") {
+      state.screenCaptureEnabled = data.screen_capture_enabled;
+      updateScreenCaptureUi(false);
+    }
+    setStatus(statusWithCapture(data.message, data.ok), data.ok);
   } catch (error) {
     setStatus(`Offline — ${error.message}`, false);
   }
@@ -192,11 +206,92 @@ async function selectCaptureSource(id, label) {
   for (const option of els.captureMenu.querySelectorAll(".custom-select-option")) {
     option.classList.toggle("selected", option.dataset.value === id);
   }
+  if (!state.screenCaptureEnabled) return;
   try {
     await api(`/api/preview?source=${encodeURIComponent(id)}`);
   } catch {
     // Preview sync is best-effort; chat still passes capture_source.
   }
+}
+
+function updateScreenCaptureUi(notify = true) {
+  const on = state.screenCaptureEnabled;
+  if (els.screenCaptureToggle) {
+    els.screenCaptureToggle.textContent = on ? "Screen: ON" : "Screen: OFF";
+    els.screenCaptureToggle.classList.toggle("active", on);
+    els.screenCaptureToggle.title = on
+      ? "Turn screen capture off (saves GPU/CPU with VSeeFace open)"
+      : "Turn screen capture on so Luna can see your screen";
+  }
+  if (els.screenCaptureSetting) {
+    els.screenCaptureSetting.checked = on;
+  }
+  if (els.captureSelect) {
+    els.captureSelect.classList.toggle("disabled", !on);
+  }
+  if (els.captureTrigger) {
+    els.captureTrigger.disabled = !on;
+  }
+  if (els.analyzeBtn) {
+    els.analyzeBtn.disabled = !on;
+  }
+  if (els.useScreen) {
+    els.useScreen.disabled = !on;
+    if (!on) {
+      els.useScreen.checked = false;
+    }
+  }
+  if (els.watchEnabled) {
+    if (!on) {
+      els.watchEnabled.checked = false;
+      els.watchEnabled.disabled = true;
+    } else {
+      els.watchEnabled.disabled = false;
+    }
+  }
+  syncWatchTimer();
+  if (notify && !isObsOverlay) {
+    appendMessage(
+      "system",
+      on
+        ? "Screen capture ON — Luna can see your screen (uses GPU/CPU)."
+        : "Screen capture OFF — vision paused to save performance.",
+    );
+  }
+}
+
+async function setScreenCapture(enabled, { notify = true } = {}) {
+  const previous = state.screenCaptureEnabled;
+  state.screenCaptureEnabled = enabled;
+  updateScreenCaptureUi(false);
+  if (els.screenCaptureToggle) {
+    els.screenCaptureToggle.disabled = true;
+  }
+
+  try {
+    const data = await api("/api/screen-capture", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    state.screenCaptureEnabled = Boolean(data.enabled);
+    localStorage.setItem("luna-screen-capture", state.screenCaptureEnabled ? "1" : "0");
+    updateScreenCaptureUi(notify);
+    await refreshStatus();
+  } catch (error) {
+    state.screenCaptureEnabled = previous;
+    updateScreenCaptureUi(false);
+    appendMessage("system", `Screen capture error: ${error.message}`);
+    throw error;
+  } finally {
+    if (els.screenCaptureToggle) {
+      els.screenCaptureToggle.disabled = false;
+    }
+  }
+}
+
+async function toggleScreenCapture() {
+  await setScreenCapture(!state.screenCaptureEnabled);
 }
 
 function openCaptureMenu() {
@@ -395,7 +490,7 @@ function syncWatchTimer() {
     clearInterval(state.watchTimer);
     state.watchTimer = null;
   }
-  if (!els.watchEnabled.checked) return;
+  if (!els.watchEnabled.checked || !state.screenCaptureEnabled) return;
   const seconds = Math.max(5, Number(els.watchInterval.value) || 8);
   state.watchTimer = setInterval(watchTick, seconds * 1000);
 }
@@ -651,6 +746,20 @@ function setupUi() {
     els.settingsPanel.classList.toggle("hidden");
   });
 
+  if (els.voiceMood) {
+    els.voiceMood.addEventListener("change", async () => {
+      try {
+        await api("/api/voice/mood", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mood: els.voiceMood.value }),
+        });
+      } catch (error) {
+        appendMessage("system", `Voice mood error: ${error.message}`);
+      }
+    });
+  }
+
   els.chatForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const text = els.chatInput.value;
@@ -658,7 +767,15 @@ function setupUi() {
     sendChat(text);
   });
 
-  els.analyzeBtn.addEventListener("click", analyzeScreen);
+  els.analyzeBtn?.addEventListener("click", analyzeScreen);
+  els.screenCaptureToggle?.addEventListener("click", () => {
+    toggleScreenCapture().catch(() => {});
+  });
+  els.screenCaptureSetting?.addEventListener("change", () => {
+    const want = els.screenCaptureSetting.checked;
+    if (want === state.screenCaptureEnabled) return;
+    setScreenCapture(want).catch(() => {});
+  });
   els.clearMemory.addEventListener("click", async () => {
     await api("/api/reset", { method: "POST" });
     els.chatLog.innerHTML = "";
@@ -916,6 +1033,25 @@ async function boot() {
     appConfig = await api("/api/config");
     els.styleSelect.value = appConfig.style;
     els.watchInterval.value = appConfig.watch_interval_sec;
+    const savedCapture = localStorage.getItem("luna-screen-capture");
+    const wantCapture =
+      savedCapture === "1"
+        ? true
+        : savedCapture === "0"
+          ? false
+          : Boolean(appConfig.screen_capture_enabled);
+    if (wantCapture !== Boolean(appConfig.screen_capture_enabled)) {
+      await setScreenCapture(wantCapture, { notify: false });
+    } else {
+      state.screenCaptureEnabled = Boolean(appConfig.screen_capture_enabled);
+      updateScreenCaptureUi(false);
+    }
+    if (els.useScreen && savedCapture === "1") {
+      els.useScreen.checked = true;
+    }
+    if (els.voiceMood && appConfig.voice_mood) {
+      els.voiceMood.value = appConfig.voice_mood;
+    }
 
     const obsLink = document.getElementById("obs-url");
     if (obsLink) {

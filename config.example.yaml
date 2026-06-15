@@ -1,7 +1,9 @@
 ollama:
   host: http://127.0.0.1:11434
-  model: qwen3.5:4b
+  model: your-chat-model
+  vision_model: qwen3.5:4b
   think: false
+  chat_think: false
   temperature: 0.85
   max_tokens: 180
   num_ctx: 4096
@@ -15,6 +17,7 @@ screen:
   video_bytes_per_second: 1000000
   video_fps: 4
   video_segment_seconds: 1.0
+  capture_enabled: false
 
 cohost:
   name: Luna
@@ -35,6 +38,20 @@ vrm:
   idle_animation_path: "C:\\path\\to\\your\\idle.vrma"
 
 voice:
+  provider: edge
+  reference_audio: "C:\\path\\to\\your\\reference_voice.wav"
+  language: en
+  model_name: tts_models/multilingual/multi-dataset/xtts_v2
+  gpu: true
+  default_mood: neutral
+  auto_mood: true
+  speed: 1.0  # XTTS only — 1.3 = 30% faster (mood presets stack on top)
+  use_delivery_tags: true  # [whispers] [seductive] [pause] etc. — see voice_tags.py
+  # ElevenLabs (provider: elevenlabs) — native tag support with eleven_v3
+  elevenlabs_api_key: ""
+  elevenlabs_voice_id: ""
+  elevenlabs_model: eleven_v3
+  elevenlabs_output_format: mp3_44100_128
   edge_voice: en-US-AvaMultilingualNeural
   rate: "+0%"
   pitch: "+0Hz"
@@ -69,3 +86,8 @@ twitch:
   speak_replies: true
   command_prefix: "!luna"
   use_screen: true
+  idle_talk: true
+  idle_talk_quiet_sec: 45
+  idle_talk_cooldown_sec: 90
+  idle_talk_use_screen: true
+  idle_talk_send_chat: false
